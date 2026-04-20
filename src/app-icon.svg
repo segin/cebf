@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="22" y1="20" x2="232" y2="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7195ad"/>
+      <stop offset="1" stop-color="#2b5166"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="46" y1="40" x2="210" y2="212" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbfcfd"/>
+      <stop offset="1" stop-color="#d9e3ea"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="58" y1="78" x2="198" y2="170" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#eff6f9"/>
+      <stop offset="1" stop-color="#d7e6ee"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="18" y="18" width="220" height="220" rx="42" fill="url(#bg)"/>
+  <rect x="26" y="26" width="204" height="204" rx="34" fill="none" stroke="#a3c3d1" stroke-opacity=".45" stroke-width="3"/>
+
+  <rect x="46" y="42" width="164" height="148" rx="16" fill="url(#panel)" stroke="#bed0d8" stroke-width="4"/>
+  <rect x="46" y="42" width="164" height="28" rx="16" fill="#c9d9e1"/>
+  <circle cx="64" cy="56" r="5" fill="#cc6a66"/>
+  <circle cx="80" cy="56" r="5" fill="#d9b460"/>
+  <circle cx="96" cy="56" r="5" fill="#62b67c"/>
+  <rect x="58" y="78" width="140" height="98" rx="10" fill="url(#screen)"/>
+
+  <rect x="68" y="90" width="44" height="10" rx="5" fill="#6f94a6"/>
+  <rect x="68" y="108" width="70" height="10" rx="5" fill="#6f94a6"/>
+  <rect x="68" y="126" width="56" height="10" rx="5" fill="#6f94a6"/>
+  <rect x="68" y="144" width="78" height="10" rx="5" fill="#6f94a6"/>
+
+  <path d="M150 92l-18 18 18 18" fill="none" stroke="#2a5368" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+  <path d="M174 92l18 18-18 18" fill="none" stroke="#2a5368" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+  <path d="M160 148h26" fill="none" stroke="#3f7086" stroke-linecap="round" stroke-width="10"/>
+
+  <rect x="84" y="204" width="88" height="18" rx="9" fill="#112b35" fill-opacity=".22"/>
+  <rect x="102" y="190" width="52" height="16" rx="6" fill="#edf4f7"/>
+</svg>
