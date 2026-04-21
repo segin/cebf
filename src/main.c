@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <commctrl.h>
 #include <commdlg.h>
 #include <tchar.h>
 #include <stdlib.h>
@@ -9,7 +10,6 @@
 
 #define APP_CLASS_NAME TEXT("CEBrainfuckWindow")
 #define APP_TITLE TEXT("CE Brainfuck")
-#define APP_MENU_COUNT 3
 #define BF_TAPE_SIZE 65536
 #define WM_APP_RUN_COMPLETE (WM_APP + 1)
 
@@ -57,6 +57,8 @@ typedef struct APP_STATE_TAG {
     HWND window;
     HICON icon;
     HICON small_icon;
+    HACCEL accelerator;
+    HWND command_bar;
     HWND code_label;
     HWND code_edit;
     HWND input_label;
@@ -66,19 +68,10 @@ typedef struct APP_STATE_TAG {
     HMENU menu;
     HFONT ui_font;
     HFONT mono_font;
-    RECT menu_bar_rect;
-    RECT menu_item_rects[APP_MENU_COUNT];
-    int active_menu_index;
     HANDLE run_thread;
     volatile LONG cancel_requested;
     int is_running;
 } APP_STATE;
-
-static const TCHAR* g_menu_labels[APP_MENU_COUNT] = {
-    TEXT("File"),
-    TEXT("Edit"),
-    TEXT("Help")
-};
 
 static APP_STATE g_app;
 static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param, LPARAM l_param);
@@ -376,8 +369,10 @@ static DWORD WINAPI App_RunThreadProc(LPVOID parameter) {
     RUN_RESULT* result;
     BYTE_BUFFER output;
     RUN_STATUS status;
+    volatile LONG* cancel_flag;
 
     request = (RUN_REQUEST*)parameter;
+    cancel_flag = request->cancel_flag;
     result = (RUN_RESULT*)calloc(1, sizeof(RUN_RESULT));
     Buffer_Init(&output);
 
@@ -421,7 +416,7 @@ static DWORD WINAPI App_RunThreadProc(LPVOID parameter) {
     free(request->input);
     free(request);
 
-    if (status == RUN_STATUS_CANCELLED || *(request->cancel_flag)) {
+    if (status == RUN_STATUS_CANCELLED || *cancel_flag) {
         RunResult_Free(result);
         return 0;
     }
@@ -451,6 +446,21 @@ static HFONT App_CreateMonospaceFont(void) {
     return font;
 }
 
+static HACCEL App_CreateAccelerators(void) {
+    ACCEL entries[] = {
+        { FVIRTKEY | FCONTROL, 'N', ID_FILE_NEW },
+        { FVIRTKEY | FCONTROL, 'O', ID_FILE_OPEN },
+        { FVIRTKEY | FCONTROL, 'R', ID_FILE_RUN },
+        { FVIRTKEY | FALT, VK_F4, ID_FILE_EXIT },
+        { FVIRTKEY | FCONTROL, 'X', ID_EDIT_CUT },
+        { FVIRTKEY | FCONTROL, 'C', ID_EDIT_COPY },
+        { FVIRTKEY | FCONTROL, 'V', ID_EDIT_PASTE },
+        { FVIRTKEY | FCONTROL, 'A', ID_EDIT_SELECT_ALL }
+    };
+
+    return CreateAcceleratorTable(entries, (int)ARRAYSIZE(entries));
+}
+
 static void App_ApplyFonts(APP_STATE* app) {
     HFONT label_font;
 
@@ -472,7 +482,9 @@ static void App_DestroyThreadHandle(APP_STATE* app) {
 
 static void App_SetRunning(APP_STATE* app, int is_running) {
     app->is_running = is_running;
-    InvalidateRect(app->window, &app->menu_bar_rect, TRUE);
+    if (app->command_bar) {
+        CommandBar_DrawMenuBar(app->command_bar, 0);
+    }
 }
 
 static void App_UpdateMenuState(APP_STATE* app) {
@@ -506,6 +518,7 @@ static void App_UpdateMenuState(APP_STATE* app) {
 
 static void App_Layout(APP_STATE* app) {
     RECT client;
+    int command_height;
     int margin;
     int label_height;
     int edit_gap;
@@ -516,8 +529,6 @@ static void App_Layout(APP_STATE* app) {
     int edit_space;
     int code_height;
     int input_height;
-    int menu_left;
-    int index;
     int y;
 
     GetClientRect(app->window, &client);
@@ -527,21 +538,13 @@ static void App_Layout(APP_STATE* app) {
     edit_gap = 4;
     section_gap = 10;
 
-    SetRect(&app->menu_bar_rect, client.left, client.top, client.right, client.top + 24);
-
-    menu_left = client.left + 6;
-    for (index = 0; index < APP_MENU_COUNT; ++index) {
-        SetRect(
-            &app->menu_item_rects[index],
-            menu_left,
-            app->menu_bar_rect.top + 2,
-            menu_left + 52,
-            app->menu_bar_rect.bottom - 2
-        );
-        menu_left += 54;
+    command_height = 0;
+    if (app->command_bar) {
+        command_height = CommandBar_Height(app->command_bar);
+        MoveWindow(app->command_bar, 0, 0, client.right - client.left, command_height, TRUE);
     }
 
-    top = app->menu_bar_rect.bottom + margin;
+    top = command_height + margin;
     width = max(10, client.right - margin * 2);
     usable_height = max(150, client.bottom - top - margin);
     edit_space = usable_height - (label_height * 3) - (edit_gap * 3) - (section_gap * 2);
@@ -565,82 +568,6 @@ static void App_Layout(APP_STATE* app) {
     MoveWindow(app->output_label, margin, y, width, label_height, TRUE);
     y += label_height + edit_gap;
     MoveWindow(app->output_edit, margin, y, width, max(40, client.bottom - y - margin), TRUE);
-}
-
-static void App_DrawMenuBar(HDC hdc, APP_STATE* app) {
-    HBRUSH brush;
-    int index;
-
-    brush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
-    FillRect(hdc, &app->menu_bar_rect, brush);
-    DeleteObject(brush);
-
-    MoveToEx(hdc, app->menu_bar_rect.left, app->menu_bar_rect.bottom - 1, NULL);
-    LineTo(hdc, app->menu_bar_rect.right, app->menu_bar_rect.bottom - 1);
-
-    SetBkMode(hdc, TRANSPARENT);
-    SelectObject(hdc, app->ui_font);
-    for (index = 0; index < APP_MENU_COUNT; ++index) {
-        RECT text_rect;
-
-        text_rect = app->menu_item_rects[index];
-        if (index == app->active_menu_index) {
-            DrawEdge(hdc, &text_rect, EDGE_SUNKEN, BF_RECT);
-        }
-        DrawText(hdc, g_menu_labels[index], -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-}
-
-static int App_HitTestMenu(APP_STATE* app, POINT point) {
-    int index;
-
-    if (!PtInRect(&app->menu_bar_rect, point)) {
-        return -1;
-    }
-
-    for (index = 0; index < APP_MENU_COUNT; ++index) {
-        if (PtInRect(&app->menu_item_rects[index], point)) {
-            return index;
-        }
-    }
-    return -1;
-}
-
-static void App_ShowMenuPopup(APP_STATE* app, int menu_index) {
-    HMENU submenu;
-    POINT popup_point;
-    int command_id;
-
-    submenu = GetSubMenu(app->menu, menu_index);
-    if (!submenu) {
-        return;
-    }
-
-    App_UpdateMenuState(app);
-    app->active_menu_index = menu_index;
-    InvalidateRect(app->window, &app->menu_bar_rect, TRUE);
-    UpdateWindow(app->window);
-
-    popup_point.x = app->menu_item_rects[menu_index].left;
-    popup_point.y = app->menu_item_rects[menu_index].bottom;
-    ClientToScreen(app->window, &popup_point);
-
-    command_id = TrackPopupMenu(
-        submenu,
-        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_LEFTBUTTON,
-        popup_point.x,
-        popup_point.y,
-        0,
-        app->window,
-        NULL
-    );
-
-    app->active_menu_index = -1;
-    InvalidateRect(app->window, &app->menu_bar_rect, TRUE);
-
-    if (command_id != 0) {
-        PostMessage(app->window, WM_COMMAND, MAKEWPARAM(command_id, 0), 0);
-    }
 }
 
 static HWND App_GetFocusedEdit(APP_STATE* app) {
@@ -896,16 +823,23 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
             app->window = window;
             app->icon = (HICON)LoadImage(app->instance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON, 32, 32, 0);
             app->small_icon = (HICON)LoadImage(app->instance, MAKEINTRESOURCE(IDI_APP), IMAGE_ICON, 16, 16, 0);
+            app->accelerator = App_CreateAccelerators();
             app->ui_font = (HFONT)GetStockObject(SYSTEM_FONT);
             app->mono_font = App_CreateMonospaceFont();
             app->menu = LoadMenu(app->instance, MAKEINTRESOURCE(IDR_MAIN_MENU));
-            app->active_menu_index = -1;
 
             if (app->icon) {
                 SendMessage(window, WM_SETICON, ICON_BIG, (LPARAM)app->icon);
             }
             if (app->small_icon) {
                 SendMessage(window, WM_SETICON, ICON_SMALL, (LPARAM)app->small_icon);
+            }
+
+            app->command_bar = CommandBar_Create(app->instance, app->window, 1);
+            if (app->command_bar) {
+                CommandBar_InsertMenubar(app->command_bar, app->instance, IDR_MAIN_MENU, 0);
+                CommandBar_DrawMenuBar(app->command_bar, 0);
+                app->menu = CommandBar_GetMenu(app->command_bar, 0);
             }
 
             app->code_label = CreateWindow(TEXT("STATIC"), TEXT("Code:"), WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)IDC_CODE_LABEL, app->instance, NULL);
@@ -930,30 +864,8 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
             App_HandleCommand(app, LOWORD(w_param));
             return 0;
 
-        case WM_LBUTTONDOWN:
-            {
-                POINT point;
-                int menu_index;
-
-                point.x = LOWORD(l_param);
-                point.y = HIWORD(l_param);
-                menu_index = App_HitTestMenu(app, point);
-                if (menu_index >= 0) {
-                    App_ShowMenuPopup(app, menu_index);
-                    return 0;
-                }
-            }
-            break;
-
-        case WM_PAINT:
-            {
-                PAINTSTRUCT paint_struct;
-                HDC hdc;
-
-                hdc = BeginPaint(window, &paint_struct);
-                App_DrawMenuBar(hdc, app);
-                EndPaint(window, &paint_struct);
-            }
+        case WM_INITMENUPOPUP:
+            App_UpdateMenuState(app);
             return 0;
 
         case WM_CTLCOLORSTATIC:
@@ -979,9 +891,17 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
                 DestroyIcon(app->small_icon);
                 app->small_icon = NULL;
             }
+            if (app->accelerator) {
+                DestroyAcceleratorTable(app->accelerator);
+                app->accelerator = NULL;
+            }
             if (app->mono_font && app->mono_font != GetStockObject(SYSTEM_FIXED_FONT)) {
                 DeleteObject(app->mono_font);
                 app->mono_font = NULL;
+            }
+            if (app->command_bar) {
+                CommandBar_Destroy(app->command_bar);
+                app->command_bar = NULL;
             }
             if (app->menu) {
                 DestroyMenu(app->menu);
@@ -996,6 +916,7 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
 }
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR command_line, int show_command) {
+    INITCOMMONCONTROLSEX controls;
     HWND window;
     MSG message;
 
@@ -1004,6 +925,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
 
     memset(&g_app, 0, sizeof(g_app));
     g_app.instance = instance;
+
+    memset(&controls, 0, sizeof(controls));
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_BAR_CLASSES;
+    InitCommonControlsEx(&controls);
 
     if (!App_RegisterClass(instance)) {
         MessageBox(NULL, TEXT("Window class registration failed."), APP_TITLE, MB_OK | MB_ICONERROR);
@@ -1016,8 +942,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
         WS_VISIBLE | WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SIZEBOX | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        640,
-        480,
+        620,
+        350,
         NULL,
         NULL,
         instance,
@@ -1033,8 +959,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
     UpdateWindow(window);
 
     while (GetMessage(&message, NULL, 0, 0)) {
-        TranslateMessage(&message);
-        DispatchMessage(&message);
+        if (!g_app.accelerator || !TranslateAccelerator(window, g_app.accelerator, &message)) {
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+        }
     }
 
     return (int)message.wParam;

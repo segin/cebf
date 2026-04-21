@@ -4,7 +4,7 @@ STRIP = $(TOOLCHAIN_PREFIX)strip
 WINDRES = $(TOOLCHAIN_PREFIX)windres
 
 CFLAGS = -O2 -Wall -Wextra -Wno-unused-parameter -std=c99 -pedantic -D_WIN32_WCE=0x600 -D_UNICODE -DUNICODE
-LDFLAGS = -lcommdlg -lcoredll -static-libgcc
+LDFLAGS = -lcommctrl -lcommdlg -lcoredll -static-libgcc
 
 SRC = src/main.c
 OBJ = $(SRC:.c=.o)
