@@ -144,6 +144,7 @@ static unsigned char* App_GetEditBytes(HWND edit, size_t* length_out) {
         return NULL;
     }
 
+    /* Truncate each TCHAR to a byte; non-Latin-1 characters are lost. */
     for (index = 0; index < text_length; ++index) {
         bytes[index] = (unsigned char)(text[index] & 0xff);
     }
@@ -160,6 +161,9 @@ static TCHAR* App_TextFromBytes(const unsigned char* bytes, size_t length, int n
     size_t target_index;
     unsigned char previous_byte;
 
+    if (length > ((size_t)-1) / (2 * sizeof(TCHAR)) - 1) {
+        return NULL;
+    }
     max_chars = normalize_newlines ? (length * 2 + 1) : (length + 1);
     text = (TCHAR*)malloc(max_chars * sizeof(TCHAR));
     if (!text) {
@@ -203,6 +207,7 @@ static TCHAR* App_DuplicateText(LPCTSTR source) {
     return duplicate;
 }
 
+/* Takes ownership of `left` and frees it; returns a new combined string. */
 static TCHAR* App_CombineText(TCHAR* left, LPCTSTR right) {
     size_t left_length;
     size_t right_length;
@@ -225,17 +230,23 @@ static TCHAR* App_CombineText(TCHAR* left, LPCTSTR right) {
 }
 
 static RUN_STATUS App_RunInterpreter(const unsigned char* code, size_t code_length, const unsigned char* input, size_t input_length, volatile LONG* cancel_flag, BYTE_BUFFER* output) {
-    unsigned char tape[BF_TAPE_SIZE];
+    unsigned char* tape;
     unsigned char* filtered_code;
     size_t filtered_length;
     size_t index;
     size_t input_position;
     size_t program_counter;
     int tape_position;
+    RUN_STATUS status;
 
-    memset(tape, 0, sizeof(tape));
+    tape = (unsigned char*)calloc(BF_TAPE_SIZE, 1);
+    if (!tape) {
+        return RUN_STATUS_OUT_OF_MEMORY;
+    }
+
     filtered_code = (unsigned char*)malloc(code_length > 0 ? code_length : 1);
     if (!filtered_code) {
+        free(tape);
         return RUN_STATUS_OUT_OF_MEMORY;
     }
 
@@ -261,10 +272,11 @@ static RUN_STATUS App_RunInterpreter(const unsigned char* code, size_t code_leng
     input_position = 0;
     program_counter = 0;
 
+    status = RUN_STATUS_OK;
     while (program_counter < filtered_length) {
         if (*cancel_flag) {
-            free(filtered_code);
-            return RUN_STATUS_CANCELLED;
+            status = RUN_STATUS_CANCELLED;
+            goto cleanup;
         }
 
         switch (filtered_code[program_counter]) {
@@ -301,8 +313,8 @@ static RUN_STATUS App_RunInterpreter(const unsigned char* code, size_t code_leng
                 break;
             case '.':
                 if (!Buffer_AppendByte(output, tape[tape_position])) {
-                    free(filtered_code);
-                    return RUN_STATUS_OUT_OF_MEMORY;
+                    status = RUN_STATUS_OUT_OF_MEMORY;
+                    goto cleanup;
                 }
                 program_counter++;
                 break;
@@ -314,8 +326,8 @@ static RUN_STATUS App_RunInterpreter(const unsigned char* code, size_t code_leng
                     while (bracket_depth > 0) {
                         program_counter++;
                         if (program_counter >= filtered_length) {
-                            free(filtered_code);
-                            return RUN_STATUS_MISMATCHED_BRACKETS;
+                            status = RUN_STATUS_MISMATCHED_BRACKETS;
+                            goto cleanup;
                         }
                         if (filtered_code[program_counter] == '[') {
                             bracket_depth++;
@@ -333,8 +345,8 @@ static RUN_STATUS App_RunInterpreter(const unsigned char* code, size_t code_leng
                     bracket_depth = 1;
                     while (bracket_depth > 0) {
                         if (program_counter == 0) {
-                            free(filtered_code);
-                            return RUN_STATUS_MISMATCHED_BRACKETS;
+                            status = RUN_STATUS_MISMATCHED_BRACKETS;
+                            goto cleanup;
                         }
                         program_counter--;
                         if (filtered_code[program_counter] == ']') {
@@ -350,8 +362,10 @@ static RUN_STATUS App_RunInterpreter(const unsigned char* code, size_t code_leng
         }
     }
 
+cleanup:
     free(filtered_code);
-    return RUN_STATUS_OK;
+    free(tape);
+    return status;
 }
 
 static void RunResult_Free(RUN_RESULT* result) {
@@ -418,7 +432,7 @@ static DWORD WINAPI App_RunThreadProc(LPVOID parameter) {
 
     if (status == RUN_STATUS_CANCELLED || *cancel_flag) {
         RunResult_Free(result);
-        return 0;
+        result = NULL;
     }
 
     if (!PostMessage(g_app.window, WM_APP_RUN_COMPLETE, 0, (LPARAM)result)) {
@@ -473,8 +487,11 @@ static void App_ApplyFonts(APP_STATE* app) {
     SendMessage(app->output_edit, WM_SETFONT, (WPARAM)app->mono_font, TRUE);
 }
 
-static void App_DestroyThreadHandle(APP_STATE* app) {
+static void App_DestroyThreadHandle(APP_STATE* app, int wait) {
     if (app->run_thread) {
+        if (wait) {
+            WaitForSingleObject(app->run_thread, 2000);
+        }
         CloseHandle(app->run_thread);
         app->run_thread = NULL;
     }
@@ -651,6 +668,12 @@ static void App_HandleOpen(APP_STATE* app) {
             return;
         }
 
+        if (file_size > 16 * 1024 * 1024) {
+            CloseHandle(file_handle);
+            MessageBox(app->window, TEXT("The file is too large to open (16 MB limit)."), APP_TITLE, MB_OK | MB_ICONERROR);
+            return;
+        }
+
         file_bytes = (unsigned char*)malloc(file_size > 0 ? file_size : 1);
         if (!file_bytes) {
             CloseHandle(file_handle);
@@ -732,7 +755,7 @@ static void App_HandleRunResult(APP_STATE* app, RUN_RESULT* result) {
     }
 
     RunResult_Free(result);
-    App_DestroyThreadHandle(app);
+    App_DestroyThreadHandle(app, 0);
     App_SetRunning(app, 0);
 }
 
@@ -826,7 +849,6 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
             app->accelerator = App_CreateAccelerators();
             app->ui_font = (HFONT)GetStockObject(SYSTEM_FONT);
             app->mono_font = App_CreateMonospaceFont();
-            app->menu = LoadMenu(app->instance, MAKEINTRESOURCE(IDR_MAIN_MENU));
 
             if (app->icon) {
                 SendMessage(window, WM_SETICON, ICON_BIG, (LPARAM)app->icon);
@@ -840,6 +862,8 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
                 CommandBar_InsertMenubar(app->command_bar, app->instance, IDR_MAIN_MENU, 0);
                 CommandBar_DrawMenuBar(app->command_bar, 0);
                 app->menu = CommandBar_GetMenu(app->command_bar, 0);
+            } else {
+                app->menu = LoadMenu(app->instance, MAKEINTRESOURCE(IDR_MAIN_MENU));
             }
 
             app->code_label = CreateWindow(TEXT("STATIC"), TEXT("Code:"), WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, (HMENU)IDC_CODE_LABEL, app->instance, NULL);
@@ -902,12 +926,13 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
             if (app->command_bar) {
                 CommandBar_Destroy(app->command_bar);
                 app->command_bar = NULL;
+                app->menu = NULL;
             }
             if (app->menu) {
                 DestroyMenu(app->menu);
                 app->menu = NULL;
             }
-            App_DestroyThreadHandle(app);
+            App_DestroyThreadHandle(app, 1);
             PostQuitMessage(0);
             return 0;
     }
